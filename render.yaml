@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: gitscoop
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/healthz
+    envVars:
+      - { key: NODE_ENV, value: production }
+      - { key: PORT, value: "8787" }
+      - { key: APP_URL, sync: false }
+      - { key: GITHUB_CLIENT_ID, sync: false }
+      - { key: GITHUB_CLIENT_SECRET, sync: false }
+      - { key: SESSION_SECRET, generateValue: true }
+      - { key: DATABASE_URL, sync: false }
+      - { key: DATABASE_AUTH_TOKEN, sync: false }
