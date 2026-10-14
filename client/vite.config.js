@@ -11,7 +11,7 @@ export default defineConfig({
     chunkSizeWarningLimit: 1200,
     rollupOptions: {
       output: {
-        manualChunks: { three: ['three', '@react-three/fiber', '@react-three/drei'], md: ['react-markdown', 'remark-gfm', 'rehype-raw', 'rehype-sanitize', 'rehype-highlight'] },
+        manualChunks: { md: ['react-markdown', 'remark-gfm', 'rehype-raw', 'rehype-sanitize', 'rehype-highlight'] },
       },
     },
   },

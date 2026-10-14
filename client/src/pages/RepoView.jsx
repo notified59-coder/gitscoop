@@ -114,7 +114,7 @@ export default function RepoView() {
 
       <header className="rv-head wrap">
         <h1>{r.name}</h1>
-        {r.description && <p className="pf-headline">{r.description}</p>}
+        {(r.blurb || r.description) && <p className="pf-headline">{r.blurb || r.description}</p>}
         <div className="proj-meta">
           {r.language && <span><i style={{ background: langColor(r.language) }} />{r.language}</span>}
           <span>★ {fmt(r.stars)}</span>

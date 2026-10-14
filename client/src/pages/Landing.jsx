@@ -1,15 +1,9 @@
-import { lazy, Suspense, useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Wordmark, GithubIcon } from '../components/Brand.jsx';
 import Footer from '../components/Footer.jsx';
 import { useAuth } from '../auth.jsx';
 import { siteHost } from '../util.js';
-
-const Hero3D = lazy(() => import('../components/Hero3D.jsx'));
-
-function hasWebGL() {
-  try { const c = document.createElement('canvas'); return !!(c.getContext('webgl2') || c.getContext('webgl')); } catch { return false; }
-}
 
 const STEPS = [
   { t: 'Sign in with GitHub', d: 'One click. We read your public profile and public repositories, nothing else.' },
@@ -58,8 +52,7 @@ function Demo() {
 
 export default function Landing() {
   const { user } = useAuth();
-  const [gl, setGl] = useState(false);
-  useEffect(() => { setGl(hasWebGL()); document.title = 'GitScoop — your best repos, one link'; }, []);
+  useEffect(() => { document.title = 'GitScoop — your best repos, one link'; }, []);
   const cta = user ? (
     <Link className="btn btn-primary btn-lg" to="/dashboard">Open your dashboard</Link>
   ) : (
@@ -100,13 +93,9 @@ export default function Landing() {
 
           <figure className="plate" aria-hidden="true">
             <div className="stage">
-              {gl ? (
-                <Suspense fallback={null}><div className="canvas-wrap"><Hero3D /></div></Suspense>
-              ) : (
-                <img className="plate-img" src="/brand/logo.svg" alt="" />
-              )}
+              <img className="plate-img" src="/brand/logo.svg" alt="" />
             </div>
-            <figcaption className="plate-cap"><span>Fig. 1</span><span>The mark, rendered live</span></figcaption>
+            <figcaption className="plate-cap"><span>Fig. 1</span><span>The GitScoop mark</span></figcaption>
           </figure>
         </div>
       </section>

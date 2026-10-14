@@ -3,7 +3,7 @@
 Sign in with GitHub, pick up to 12 public repos, publish one link: `yoursite.com/u/username`.
 Visitors read each project's README and browse its code without leaving the page.
 
-**Stack:** React + Vite (client) · Express (API) · libSQL/SQLite or Turso (database) · three.js hero using your `laptop.glb`.
+**Stack:** React + Vite (client) · Express (API) · libSQL/SQLite or Turso (database) · 
 
 ## Run it on your computer
 
@@ -61,9 +61,7 @@ The same Dockerfile works on Fly.io, Railway, or a VPS. Render's free tier sleep
 ```
 server/   index.js (routes) · db.js · github.js · security.js
 client/   src/pages (Landing, Dashboard, Portfolio, RepoView) · src/components · styles.css
-          public/mascot (Slothy sprites) · public/brand · public/models/laptop.glb
+          public/mascot (Slothy sprites) · public/brand · 
 ```
 
-## Credits
 
-3D model: "Laptop" (https://skfb.ly/pJZ9p) by TymonG, licensed under Creative Commons Attribution 4.0 (http://creativecommons.org/licenses/by/4.0/). Credit appears in the site footer; keep it if you edit the footer.

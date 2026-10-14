@@ -11,5 +11,6 @@ services:
       - { key: GITHUB_CLIENT_ID, sync: false }
       - { key: GITHUB_CLIENT_SECRET, sync: false }
       - { key: SESSION_SECRET, generateValue: true }
+      - { key: TOKEN_KEY, generateValue: true }
       - { key: DATABASE_URL, sync: false }
       - { key: DATABASE_AUTH_TOKEN, sync: false }

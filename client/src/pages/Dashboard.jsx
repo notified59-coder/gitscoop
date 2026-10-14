@@ -18,6 +18,7 @@ export default function Dashboard() {
   const [q, setQ] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [editing, setEditing] = useState(null); // repo whose description is being edited
 
   useEffect(() => { document.title = 'Dashboard — GitScoop'; }, []);
 
@@ -53,6 +54,10 @@ export default function Dashboard() {
   }
 
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
+  const setLink = (key, value) => setForm((f) => ({ ...f, links: { ...f.links, [key]: value } }));
+  const setNote = (name, patch) =>
+    setForm((f) => ({ ...f, notes: { ...f.notes, [name]: { blurb: '', file: '', ...f.notes?.[name], ...patch } } }));
+  const hasNote = (name) => !!(form.notes?.[name]?.blurb || form.notes?.[name]?.file);
   const toggle = (name) => {
     if (form.repos.includes(name)) return set({ repos: form.repos.filter((n) => n !== name) });
     if (form.repos.length >= MAX) return toast(`You can pick up to ${MAX} projects. Remove one first.`, 'warn');
@@ -69,7 +74,7 @@ export default function Dashboard() {
     setSaving(true);
     setError('');
     try {
-      const body = { headline: form.headline, about: form.about, accent: form.accent, repos: form.repos, published: publish ?? form.published };
+      const body = { headline: form.headline, about: form.about, accent: form.accent, repos: form.repos, links: form.links, notes: form.notes, published: publish ?? form.published };
       const { portfolio } = await api('/me/portfolio', { method: 'PUT', body });
       setForm(portfolio);
       setSaved(portfolio);
@@ -156,11 +161,45 @@ export default function Dashboard() {
             {form.repos.length === 0 && <li className="sel-empty">Nothing picked yet. Click a repo to add it.</li>}
             {form.repos.map((n, i) => (
               <li key={n}>
-                <span className="sel-n">{i + 1}</span>
-                <span className="sel-name">{n}{!byName[n] && <em> (not in list)</em>}</span>
-                <button className="ib" onClick={() => move(i, -1)} disabled={i === 0} aria-label={`Move ${n} up`}>↑</button>
-                <button className="ib" onClick={() => move(i, 1)} disabled={i === form.repos.length - 1} aria-label={`Move ${n} down`}>↓</button>
-                <button className="ib" onClick={() => toggle(n)} aria-label={`Remove ${n}`}>×</button>
+                <div className="sel-row">
+                  <span className="sel-n">{i + 1}</span>
+                  <span className="sel-name">{n}{!byName[n] && <em> (not in list)</em>}</span>
+                  <button
+                    className={`ib ${hasNote(n) ? 'has' : ''} ${editing === n ? 'open' : ''}`}
+                    onClick={() => setEditing(editing === n ? null : n)}
+                    aria-expanded={editing === n}
+                    aria-label={`Edit how ${n} appears`}
+                    title="Write your own description"
+                  >✎</button>
+                  <button className="ib" onClick={() => move(i, -1)} disabled={i === 0} aria-label={`Move ${n} up`}>↑</button>
+                  <button className="ib" onClick={() => move(i, 1)} disabled={i === form.repos.length - 1} aria-label={`Move ${n} down`}>↓</button>
+                  <button className="ib" onClick={() => { toggle(n); if (editing === n) setEditing(null); }} aria-label={`Remove ${n}`}>×</button>
+                </div>
+                {editing === n && (
+                  <div className="sel-edit field">
+                    <label className="lf">
+                      <span>Your description <small>{(form.notes?.[n]?.blurb || '').length}/240</small></span>
+                      <textarea
+                        rows={3}
+                        maxLength={240}
+                        value={form.notes?.[n]?.blurb || ''}
+                        onChange={(e) => setNote(n, { blurb: e.target.value })}
+                        placeholder={byName[n]?.description || 'What it does and why it matters, in a sentence or two.'}
+                      />
+                    </label>
+                    <label className="lf">
+                      <span>Open this file first <small>optional</small></span>
+                      <input
+                        value={form.notes?.[n]?.file || ''}
+                        maxLength={300}
+                        onChange={(e) => setNote(n, { file: e.target.value })}
+                        placeholder="src/index.js"
+                        spellCheck={false}
+                      />
+                    </label>
+                    <p className="fine">Leave the description empty to use the one from GitHub. Without a file, visitors land on the README.</p>
+                  </div>
+                )}
               </li>
             ))}
           </ol>
@@ -184,6 +223,26 @@ export default function Dashboard() {
               placeholder="What you build, what you’re looking for, how to reach you."
             />
           </label>
+          <fieldset className="field links-set">
+            <legend>Contact and links</legend>
+            <label className="lf">
+              <span>Email</span>
+              <input type="email" value={form.links.email} maxLength={120} onChange={(e) => setLink('email', e.target.value)} placeholder="you@example.com" autoComplete="off" />
+            </label>
+            <label className="lf">
+              <span>Website</span>
+              <input value={form.links.website} maxLength={200} onChange={(e) => setLink('website', e.target.value)} placeholder="yoursite.dev" autoComplete="off" spellCheck={false} />
+            </label>
+            <label className="lf">
+              <span>LinkedIn</span>
+              <input value={form.links.linkedin} maxLength={200} onChange={(e) => setLink('linkedin', e.target.value)} placeholder="linkedin.com/in/you" autoComplete="off" spellCheck={false} />
+            </label>
+            <label className="lf">
+              <span>Résumé <small>link to a PDF</small></span>
+              <input value={form.links.resume} maxLength={200} onChange={(e) => setLink('resume', e.target.value)} placeholder="yoursite.dev/resume.pdf" autoComplete="off" spellCheck={false} />
+            </label>
+            <p className="fine">Shown publicly on your portfolio, so only add what you want recruiters to see.</p>
+          </fieldset>
           <fieldset className="field">
             <legend>Accent color</legend>
             <div className="swatches">

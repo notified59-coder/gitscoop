@@ -10,7 +10,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { db, migrate } from './db.js';
-import { assertEnv, encrypt, decrypt, isProd } from './security.js';
+import { assertEnv, encrypt, decrypt, decryptInfo, isProd } from './security.js';
 import { gh, cached, GhError, slimRepo, TEXT_LIMIT, isBinaryName } from './github.js';
 
 assertEnv();
@@ -60,16 +60,17 @@ api.use('/me', meLimit);
 // CSRF defence in depth: state-changing requests must come from our own origin.
 api.use((req, res, next) => {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
-  const origin = req.get('origin');
-  if (origin && origin !== APP_URL) return res.status(403).json({ error: 'Bad origin' });
+  let origin = req.get('origin');
+  if (!origin && req.get('referer')) { try { origin = new URL(req.get('referer')).origin; } catch { /* ignore */ } }
+  if (origin !== APP_URL) return res.status(403).json({ error: 'Bad origin' });
   next();
 });
 
 const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 // ---------- session ----------
-const setSession = (res, uid) =>
-  res.cookie('gs_session', jwt.sign({ uid }, SECRET, { expiresIn: '30d' }), {
+const setSession = (res, uid, ver = 0) =>
+  res.cookie('gs_session', jwt.sign({ uid, ver }, SECRET, { expiresIn: '30d' }), {
     httpOnly: true, sameSite: 'lax', secure: secureCookie, maxAge: 30 * 864e5, path: '/',
   });
 
@@ -77,9 +78,19 @@ async function currentUser(req) {
   const tok = req.cookies?.gs_session;
   if (!tok) return null;
   try {
-    const { uid } = jwt.verify(tok, SECRET);
-    const r = await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [uid] });
-    return r.rows[0] || null;
+    const { uid, ver = 0 } = jwt.verify(tok, SECRET);
+    const u = (await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [uid] })).rows[0];
+    // A different version means the user logged out since this cookie was issued.
+    if (!u || Number(u.session_ver) !== Number(ver)) return null;
+    if (u.token_enc) {
+      const { text, legacy } = decryptInfo(u.token_enc);
+      if (legacy) { // move tokens saved by the old version onto the dedicated TOKEN_KEY
+        const token_enc = encrypt(text);
+        await db.execute({ sql: 'UPDATE users SET token_enc = ? WHERE id = ?', args: [token_enc, u.id] });
+        return { ...u, token_enc };
+      }
+    }
+    return u;
   } catch { return null; }
 }
 const requireUser = wrap(async (req, res, next) => {
@@ -128,16 +139,23 @@ api.get('/auth/github/callback', authLimit, wrap(async (req, res) => {
             name=excluded.name, avatar=excluded.avatar, bio=excluded.bio, token_enc=excluded.token_enc`,
     args: [me.id, me.login, me.login.toLowerCase(), me.name, me.avatar_url, me.bio, encrypt(access_token), now],
   });
-  const row = (await db.execute({ sql: 'SELECT id FROM users WHERE github_id = ?', args: [me.id] })).rows[0];
+  const row = (await db.execute({ sql: 'SELECT id, session_ver FROM users WHERE github_id = ?', args: [me.id] })).rows[0];
   await db.execute({
     sql: 'INSERT OR IGNORE INTO portfolios (user_id, headline, updated_at) VALUES (?,?,?)',
     args: [row.id, me.bio || '', now],
   });
-  setSession(res, Number(row.id));
+  setSession(res, Number(row.id), Number(row.session_ver));
   res.redirect('/dashboard');
 }));
 
-api.post('/auth/logout', (req, res) => { res.clearCookie('gs_session', { path: '/' }); res.json({ ok: true }); });
+api.post('/auth/logout', wrap(async (req, res) => {
+  const u = await currentUser(req);
+  // Bumping the version kills every session cookie issued before, on all devices.
+  if (u) await db.execute({ sql: 'UPDATE users SET session_ver = session_ver + 1 WHERE id = ?', args: [u.id] });
+  res.clearCookie('gs_session', { path: '/' });
+  res.json({ ok: true });
+}));
+
 api.get('/me', wrap(async (req, res) => {
   const u = await currentUser(req);
   res.json({ user: u ? publicUser(u) : null });
@@ -162,9 +180,14 @@ api.get('/me/repos', requireUser, wrap(async (req, res) => {
 
 const portfolioRow = async (uid) =>
   (await db.execute({ sql: 'SELECT * FROM portfolios WHERE user_id = ?', args: [uid] })).rows[0];
+const safeJson = (s, fallback) => { try { return JSON.parse(s) ?? fallback; } catch { return fallback; } };
+const EMPTY_LINKS = { email: '', website: '', linkedin: '', resume: '' };
 const shapePortfolio = (p) => ({
   headline: p.headline, about: p.about, accent: p.accent,
-  repos: JSON.parse(p.repos), published: !!p.published, views: Number(p.views), updated_at: Number(p.updated_at),
+  repos: JSON.parse(p.repos),
+  links: { ...EMPTY_LINKS, ...safeJson(p.links, {}) },
+  notes: safeJson(p.notes, {}),
+  published: !!p.published, views: Number(p.views), updated_at: Number(p.updated_at),
 });
 
 api.get('/me/portfolio', requireUser, wrap(async (req, res) => {
@@ -172,21 +195,58 @@ api.get('/me/portfolio', requireUser, wrap(async (req, res) => {
 }));
 
 const ACCENTS = ['red', 'amber', 'green', 'blue', 'violet'];
+const LINK_LABELS = { email: 'Email', website: 'Website', linkedin: 'LinkedIn', resume: 'Résumé link' };
+// Links: add https:// when missing, and only ever allow http(s) so nothing like javascript: gets through.
+const urlField = z.string().trim().max(200).transform((v, ctx) => {
+  if (!v) return '';
+  const bad = () => { ctx.addIssue({ code: 'custom', message: 'Enter a valid link, like example.com' }); return z.NEVER; };
+  if (/^(javascript|data|vbscript|file|mailto|tel):/i.test(v)) return bad();
+  const full = /^https?:\/\//i.test(v) ? v : v.includes('://') ? '' : `https://${v}`;
+  try {
+    const u = new URL(full);
+    if (!u.hostname.includes('.')) return bad();
+    return u.href;
+  } catch { return bad(); }
+});
+const emailField = z.string().trim().max(120)
+  .refine((v) => v === '' || /^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(v), 'Enter a valid email address');
+const noteSchema = z.object({
+  blurb: z.string().trim().max(240).default(''),
+  file: z.string().trim().max(300).refine((v) => !/[?#\\]/.test(v), 'Use a plain path like src/index.js').default(''),
+});
 const saveSchema = z.object({
   headline: z.string().trim().max(90),
   about: z.string().trim().max(600),
   accent: z.enum(ACCENTS),
   repos: z.array(z.string().regex(/^[\w.-]+$/).max(100)).max(MAX_REPOS),
+  links: z.object({
+    email: emailField.default(''),
+    website: urlField.default(''),
+    linkedin: urlField.default(''),
+    resume: urlField.default(''),
+  }).default({}),
+  notes: z.record(z.string().regex(/^[\w.-]{1,100}$/), noteSchema).default({})
+    .refine((o) => Object.keys(o).length <= 50, 'Too many project notes'),
   published: z.boolean(),
 });
+const issueText = (i) => {
+  const [a, b] = i.path;
+  const label = a === 'links' ? LINK_LABELS[b] : a === 'notes' ? b : '';
+  return label ? `${label}: ${i.message}` : i.message;
+};
 
 api.put('/me/portfolio', requireUser, wrap(async (req, res) => {
   const parsed = saveSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Check your inputs and try again.' });
+  if (!parsed.success) {
+    const custom = parsed.error.issues.find((i) => i.code === 'custom');
+    return res.status(400).json({ error: custom ? issueText(custom) : 'Check your inputs and try again.' });
+  }
   const d = parsed.data;
   const uniq = [...new Set(d.repos)];
   // Only newly added repos need a GitHub check; ones already saved are trusted.
-  const already = new Set(JSON.parse((await portfolioRow(req.user.id)).repos));
+  const current = await portfolioRow(req.user.id);
+  const already = new Set(JSON.parse(current.repos));
+  const oldNotes = safeJson(current.notes, {});
   const token = userToken(req.user);
   const verified = new Set();
   await Promise.all(uniq.filter((n) => !already.has(n)).map(async (n) => {
@@ -199,9 +259,31 @@ api.put('/me/portfolio', requireUser, wrap(async (req, res) => {
     }
   }));
   const repos = uniq.filter((n) => already.has(n) || verified.has(n));
+
+  // Project notes: keep only chosen repos, drop empty ones, validate the "open first" path.
+  const notes = {};
+  for (const n of repos) {
+    const raw = d.notes[n];
+    if (!raw) continue;
+    const file = safePath(raw.file);
+    if (raw.blurb || file) notes[n] = { blurb: raw.blurb, file };
+  }
+  // A newly entered "open first" file must really exist, otherwise the link would land on an error.
+  await Promise.all(Object.entries(notes)
+    .filter(([n, v]) => v.file && v.file !== oldNotes[n]?.file)
+    .map(async ([n, v]) => {
+      try {
+        const j = await (await gh(`/repos/${req.user.username}/${n}/contents/${encodeURI(v.file)}`, token)).json();
+        if (Array.isArray(j) || j.type !== 'file') throw new GhError(400, `${n}: “${v.file}” is a folder. Pick a file.`);
+      } catch (e) {
+        if (e instanceof GhError && e.status === 404) throw new GhError(400, `${n}: “${v.file}” wasn’t found. Check the path.`);
+        throw e;
+      }
+    }));
+
   await db.execute({
-    sql: 'UPDATE portfolios SET headline=?, about=?, accent=?, repos=?, published=?, updated_at=? WHERE user_id=?',
-    args: [d.headline, d.about, d.accent, JSON.stringify(repos), d.published ? 1 : 0, Date.now(), req.user.id],
+    sql: 'UPDATE portfolios SET headline=?, about=?, accent=?, repos=?, links=?, notes=?, published=?, updated_at=? WHERE user_id=?',
+    args: [d.headline, d.about, d.accent, JSON.stringify(repos), JSON.stringify(d.links), JSON.stringify(notes), d.published ? 1 : 0, Date.now(), req.user.id],
   });
   res.json({ portfolio: shapePortfolio(await portfolioRow(req.user.id)) });
 }));
@@ -238,7 +320,9 @@ api.get('/p/:username', wrap(async (req, res) => {
   const { u, p, isOwner, token } = await loadPublic(req, req.params.username);
   const names = JSON.parse(p.repos);
   const settled = await Promise.allSettled(names.map((n) => repoDetails(u, token, n)));
-  const repos = settled.filter((s) => s.status === 'fulfilled').map((s) => s.value);
+  const notes = safeJson(p.notes, {});
+  const repos = settled.filter((s) => s.status === 'fulfilled')
+    .map((s) => ({ ...s.value, blurb: notes[s.value.name]?.blurb || '', file: notes[s.value.name]?.file || '' }));
   const totals = {};
   repos.forEach((r) => Object.entries(r.languages).forEach(([k, v]) => (totals[k] = (totals[k] || 0) + v)));
   const sum = Object.values(totals).reduce((a, b) => a + b, 0) || 1;
@@ -246,7 +330,10 @@ api.get('/p/:username', wrap(async (req, res) => {
     .map(([name, v]) => ({ name, pct: Math.round((v / sum) * 100) }));
   res.json({
     user: { ...publicUser(u), github: `https://github.com/${u.username}` },
-    portfolio: { headline: p.headline, about: p.about, accent: p.accent, published: !!p.published, views: Number(p.views) },
+    portfolio: {
+      headline: p.headline, about: p.about, accent: p.accent, published: !!p.published, views: Number(p.views),
+      links: { ...EMPTY_LINKS, ...safeJson(p.links, {}) },
+    },
     repos, languages, isOwner,
   });
 }));

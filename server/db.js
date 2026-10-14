@@ -17,6 +17,7 @@ export async function migrate() {
       avatar TEXT,
       bio TEXT,
       token_enc TEXT,
+      session_ver INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL
     )`,
     `CREATE TABLE IF NOT EXISTS portfolios (
@@ -25,9 +26,19 @@ export async function migrate() {
       about TEXT NOT NULL DEFAULT '',
       accent TEXT NOT NULL DEFAULT 'red',
       repos TEXT NOT NULL DEFAULT '[]',
+      links TEXT NOT NULL DEFAULT '{}',
+      notes TEXT NOT NULL DEFAULT '{}',
       published INTEGER NOT NULL DEFAULT 0,
       views INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER NOT NULL
     )`,
   ], 'write');
+
+  const userCols = (await db.execute('PRAGMA table_info(users)')).rows.map((r) => r.name);
+  if (!userCols.includes('session_ver')) await db.execute('ALTER TABLE users ADD COLUMN session_ver INTEGER NOT NULL DEFAULT 0');
+
+  // Databases created before contact links and project notes existed: add the new columns once.
+  const cols = (await db.execute('PRAGMA table_info(portfolios)')).rows.map((r) => r.name);
+  if (!cols.includes('links')) await db.execute(`ALTER TABLE portfolios ADD COLUMN links TEXT NOT NULL DEFAULT '{}'`);
+  if (!cols.includes('notes')) await db.execute(`ALTER TABLE portfolios ADD COLUMN notes TEXT NOT NULL DEFAULT '{}'`);
 }
