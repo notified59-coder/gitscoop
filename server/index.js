@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { db, migrate } from './db.js';
 import { assertEnv, encrypt, decrypt, decryptInfo, isProd } from './security.js';
-import { gh, cached, uncache, GhError, slimRepo, TEXT_LIMIT, isBinaryName } from './github.js';
+import { gh, ghGraphql, cached, uncache, GhError, slimRepo, TEXT_LIMIT, isBinaryName } from './github.js';
 
 assertEnv();
 await migrate();
@@ -182,11 +182,22 @@ const portfolioRow = async (uid) =>
   (await db.execute({ sql: 'SELECT * FROM portfolios WHERE user_id = ?', args: [uid] })).rows[0];
 const safeJson = (s, fallback) => { try { return JSON.parse(s) ?? fallback; } catch { return fallback; } };
 const EMPTY_LINKS = { email: '', website: '', linkedin: '', resume: '' };
+const EMPTY_EXTRA = {
+  open: false, openText: '', experience: [], education: [],
+  featured: { repo: '', image: '', story: '', demo: '' },
+};
+const shapeExtra = (e = {}) => ({
+  ...EMPTY_EXTRA, ...e,
+  experience: Array.isArray(e.experience) ? e.experience : [],
+  education: Array.isArray(e.education) ? e.education : [],
+  featured: { ...EMPTY_EXTRA.featured, ...(e.featured || {}) },
+});
 const shapePortfolio = (p) => ({
   headline: p.headline, about: p.about, accent: p.accent,
   repos: JSON.parse(p.repos),
   links: { ...EMPTY_LINKS, ...safeJson(p.links, {}) },
   notes: safeJson(p.notes, {}),
+  extra: shapeExtra(safeJson(p.extra, {})),
   published: !!p.published, listed: !!p.listed, views: Number(p.views), updated_at: Number(p.updated_at),
 });
 
@@ -213,7 +224,30 @@ const emailField = z.string().trim().max(120)
 const noteSchema = z.object({
   blurb: z.string().trim().max(240).default(''),
   file: z.string().trim().max(300).refine((v) => !/[?#\\]/.test(v), 'Use a plain path like src/index.js').default(''),
+  image: urlField.default(''),
+  highlights: z.array(z.string().trim().max(100)).max(3).default([]),
 });
+const extraSchema = z.object({
+  open: z.boolean().default(false),
+  openText: z.string().trim().max(60).default(''),
+  experience: z.array(z.object({
+    role: z.string().trim().max(80).default(''),
+    org: z.string().trim().max(80).default(''),
+    period: z.string().trim().max(40).default(''),
+    desc: z.string().trim().max(300).default(''),
+  })).max(6).default([]),
+  education: z.array(z.object({
+    school: z.string().trim().max(100).default(''),
+    degree: z.string().trim().max(100).default(''),
+    period: z.string().trim().max(40).default(''),
+  })).max(4).default([]),
+  featured: z.object({
+    repo: z.string().regex(/^[\w.-]*$/).max(100).default(''),
+    image: urlField.default(''),
+    story: z.string().trim().max(500).default(''),
+    demo: urlField.default(''),
+  }).default({}),
+}).default({});
 const saveSchema = z.object({
   headline: z.string().trim().max(90),
   about: z.string().trim().max(600),
@@ -227,12 +261,13 @@ const saveSchema = z.object({
   }).default({}),
   notes: z.record(z.string().regex(/^[\w.-]{1,100}$/), noteSchema).default({})
     .refine((o) => Object.keys(o).length <= 50, 'Too many project notes'),
+  extra: extraSchema,
   published: z.boolean(),
   listed: z.boolean().default(false),
 });
 const issueText = (i) => {
   const [a, b] = i.path;
-  const label = a === 'links' ? LINK_LABELS[b] : a === 'notes' ? b : '';
+  const label = a === 'links' ? LINK_LABELS[b] : a === 'notes' ? b : a === 'extra' ? i.path.slice(1).filter((x) => typeof x === 'string').join(' ') : '';
   return label ? `${label}: ${i.message}` : i.message;
 };
 
@@ -267,8 +302,17 @@ api.put('/me/portfolio', requireUser, wrap(async (req, res) => {
     const raw = d.notes[n];
     if (!raw) continue;
     const file = safePath(raw.file);
-    if (raw.blurb || file) notes[n] = { blurb: raw.blurb, file };
+    const highlights = (raw.highlights || []).filter(Boolean);
+    if (raw.blurb || file || raw.image || highlights.length) notes[n] = { blurb: raw.blurb, file, image: raw.image, highlights };
   }
+
+  // Extra sections: drop empty entries, and the featured project must be one of the chosen repos.
+  const extra = {
+    ...d.extra,
+    experience: d.extra.experience.filter((e) => e.role || e.org),
+    education: d.extra.education.filter((e) => e.school || e.degree),
+    featured: { ...d.extra.featured, repo: repos.includes(d.extra.featured.repo) ? d.extra.featured.repo : '' },
+  };
   // A newly entered "open first" file must really exist, otherwise the link would land on an error.
   await Promise.all(Object.entries(notes)
     .filter(([n, v]) => v.file && v.file !== oldNotes[n]?.file)
@@ -283,8 +327,8 @@ api.put('/me/portfolio', requireUser, wrap(async (req, res) => {
     }));
 
   await db.execute({
-    sql: 'UPDATE portfolios SET headline=?, about=?, accent=?, repos=?, links=?, notes=?, published=?, listed=?, updated_at=? WHERE user_id=?',
-    args: [d.headline, d.about, d.accent, JSON.stringify(repos), JSON.stringify(d.links), JSON.stringify(notes), d.published ? 1 : 0, d.listed ? 1 : 0, Date.now(), req.user.id],
+    sql: 'UPDATE portfolios SET headline=?, about=?, accent=?, repos=?, links=?, notes=?, extra=?, published=?, listed=?, updated_at=? WHERE user_id=?',
+    args: [d.headline, d.about, d.accent, JSON.stringify(repos), JSON.stringify(d.links), JSON.stringify(notes), JSON.stringify(extra), d.published ? 1 : 0, d.listed ? 1 : 0, Date.now(), req.user.id],
   });
   uncache('explore'); uncache('sitemap');
   res.json({ portfolio: shapePortfolio(await portfolioRow(req.user.id)) });
@@ -319,13 +363,55 @@ async function repoDetails(u, token, name) {
   });
 }
 
+// Extra profile facts straight from GitHub (location, company, followers, since when...).
+async function ghProfile(u, token) {
+  return cached(`ghuser:${u.username_lc}`, 10 * 60_000, async () => {
+    try {
+      const j = await (await gh(`/users/${u.username}`, token)).json();
+      return {
+        location: j.location || '', company: j.company || '', followers: j.followers ?? 0, following: j.following ?? 0,
+        public_repos: j.public_repos ?? 0, created_at: j.created_at || null, blog: j.blog || '',
+        twitter: /^\w{1,15}$/.test(j.twitter_username || '') ? j.twitter_username : '',
+      };
+    } catch { return null; }
+  });
+}
+
+// The green-squares calendar. Needs the owner's token; if anything fails we just hide the section.
+const CAL_QUERY = `query($login:String!){ user(login:$login){ contributionsCollection{ contributionCalendar{ totalContributions weeks{ contributionDays{ date contributionCount } } } } } }`;
+const shapeCalendar = (c) => ({
+  total: c.totalContributions,
+  weeks: c.weeks.map((w) => w.contributionDays.map((d) => [d.date, d.contributionCount])),
+});
+async function ghCalendar(u, token) {
+  return cached(`cal:${u.username_lc}`, 60 * 60_000, async () => {
+    try {
+      const d = await ghGraphql(CAL_QUERY, { login: u.username }, token);
+      return shapeCalendar(d.user.contributionsCollection.contributionCalendar);
+    } catch { return null; }
+  });
+}
+
 api.get('/p/:username', wrap(async (req, res) => {
   const { u, p, isOwner, token } = await loadPublic(req, req.params.username);
   const names = JSON.parse(p.repos);
-  const settled = await Promise.allSettled(names.map((n) => repoDetails(u, token, n)));
+  const [settled, profile, calendar] = await Promise.all([
+    Promise.allSettled(names.map((n) => repoDetails(u, token, n))),
+    ghProfile(u, token),
+    ghCalendar(u, token),
+  ]);
   const notes = safeJson(p.notes, {});
   const repos = settled.filter((s) => s.status === 'fulfilled')
-    .map((s) => ({ ...s.value, blurb: notes[s.value.name]?.blurb || '', file: notes[s.value.name]?.file || '' }));
+    .map((s) => ({
+      ...s.value,
+      blurb: notes[s.value.name]?.blurb || '', file: notes[s.value.name]?.file || '',
+      image: notes[s.value.name]?.image || '', highlights: notes[s.value.name]?.highlights || [],
+    }));
+  const topicCount = {};
+  repos.forEach((r) => r.topics.forEach((t) => { topicCount[t] = (topicCount[t] || 0) + 1; }));
+  const topics = Object.entries(topicCount).sort((a, b) => b[1] - a[1]).slice(0, 14).map(([t]) => t);
+  const extra = shapeExtra(safeJson(p.extra, {}));
+  if (!repos.some((r) => r.name === extra.featured.repo)) extra.featured = { ...extra.featured, repo: '' };
   const totals = {};
   repos.forEach((r) => Object.entries(r.languages).forEach(([k, v]) => (totals[k] = (totals[k] || 0) + v)));
   const sum = Object.values(totals).reduce((a, b) => a + b, 0) || 1;
@@ -336,8 +422,9 @@ api.get('/p/:username', wrap(async (req, res) => {
     portfolio: {
       headline: p.headline, about: p.about, accent: p.accent, published: !!p.published, views: Number(p.views),
       links: { ...EMPTY_LINKS, ...safeJson(p.links, {}) },
+      extra,
     },
-    repos, languages, isOwner,
+    repos, languages, topics, profile, calendar, isOwner,
   });
 }));
 

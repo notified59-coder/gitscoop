@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { ACCENTS, langColor, fmt, ago, copy } from '../util.js';
 import NotFound from './NotFound.jsx';
+import Heatmap from '../components/Heatmap.jsx';
 import ThemeToggle, { useTheme } from '../components/ThemeToggle.jsx';
 import { useToast } from '../components/Toast.jsx';
 
@@ -10,9 +11,16 @@ const icon = { width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', stroke
 const GlobeIcon = () => (<svg {...icon}><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3c2.6 2.4 4 5.6 4 9s-1.4 6.6-4 9c-2.6-2.4-4-5.6-4-9s1.4-6.6 4-9Z" /></svg>);
 const LinkedInIcon = () => (<svg {...icon}><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M8 11v5M8 8v.01M12 16v-5m0 2.5c0-1.5 1-2.5 2.3-2.5s1.7 1 1.7 2.5V16" /></svg>);
 const FileIcon = () => (<svg {...icon}><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" /><path d="M14 3v5h5M9 13h6M9 17h4" /></svg>);
+const XIcon = () => (<svg {...icon}><path d="M4 4l16 16M20 4L4 20" /></svg>);
 
 // Only ever render http(s) links, whatever is stored.
 const safeHref = (u) => (/^https?:\/\//i.test(u || '') ? u : null);
+const withScheme = (u) => (!u ? '' : /^https?:\/\//i.test(u) ? u : `https://${u}`);
+
+function Highlights({ items }) {
+  if (!items?.length) return null;
+  return <ul className="hl">{items.map((h, i) => <li key={i}>{h}</li>)}</ul>;
+}
 
 export default function Portfolio() {
   const { username } = useParams();
@@ -44,14 +52,37 @@ export default function Portfolio() {
   if (!data) return <div className="boot" role="status"><span className="loader" /></div>;
 
   const { user, portfolio, repos, languages, isOwner } = data;
+  const topics = data.topics || [];
+  const profile = data.profile || null;
+  const calendar = data.calendar || null;
+  const extra = portfolio.extra || {};
+  const experience = extra.experience || [];
+  const education = extra.education || [];
+
   const stars = repos.reduce((a, r) => a + r.stars, 0);
   const links = portfolio.links || {};
   const email = links.email || '';
-  const extra = [
-    { href: safeHref(links.website), label: 'Website', Icon: GlobeIcon },
+  const website = safeHref(links.website) || safeHref(withScheme(profile?.blog));
+  const extraLinks = [
+    { href: website, label: 'Website', Icon: GlobeIcon },
     { href: safeHref(links.linkedin), label: 'LinkedIn', Icon: LinkedInIcon },
+    { href: profile?.twitter ? `https://x.com/${profile.twitter}` : null, label: 'X', Icon: XIcon },
     { href: safeHref(links.resume), label: 'Résumé', Icon: FileIcon },
   ].filter((l) => l.href);
+
+  const meta = [
+    profile?.location && profile.location,
+    profile?.company && profile.company.replace(/^@/, ''),
+    profile?.created_at && `On GitHub since ${new Date(profile.created_at).getFullYear()}`,
+    profile && `${fmt(profile.followers)} follower${profile.followers === 1 ? '' : 's'}`,
+  ].filter(Boolean);
+
+  const skills = [...new Set([...languages.map((l) => l.name), ...topics].map((s) => s.trim()))].slice(0, 16);
+
+  const featured = repos.find((r) => r.name === extra.featured?.repo);
+  const featImg = featured && (safeHref(extra.featured.image) || safeHref(featured.image));
+  const featDemo = featured && (safeHref(extra.featured.demo) || safeHref(featured.homepage));
+  const repoLink = (r) => `/u/${user.username}/${r.name}${r.file ? `?file=${encodeURIComponent(r.file)}` : ''}`;
 
   return (
     <div className="pf" data-theme={theme} style={{ '--accent': ACCENTS[portfolio.accent] || ACCENTS.red }}>
@@ -73,7 +104,15 @@ export default function Portfolio() {
         <div className="pf-id">
           <h1>{user.name || user.username}</h1>
           <p className="handle">@{user.username}</p>
+          {extra.open && (
+            <p className="open-badge"><i aria-hidden="true" />{extra.openText || 'Open to work'}</p>
+          )}
           {portfolio.headline && <p className="pf-headline">{portfolio.headline}</p>}
+          {meta.length > 0 && (
+            <ul className="meta-line" aria-label="About">
+              {meta.map((m) => <li key={m}>{m}</li>)}
+            </ul>
+          )}
           {portfolio.about && <p className="pf-about">{portfolio.about}</p>}
           <div className="pf-actions">
             {email && <a className="btn btn-primary" href={`mailto:${email}`}>Email {user.name?.split(' ')[0] || user.username}</a>}
@@ -85,9 +124,9 @@ export default function Portfolio() {
               Copy link
             </button>
           </div>
-          {extra.length > 0 && (
+          {extraLinks.length > 0 && (
             <ul className="pf-links" aria-label="Links">
-              {extra.map(({ href, label, Icon }) => (
+              {extraLinks.map(({ href, label, Icon }) => (
                 <li key={label}>
                   <a href={href} target="_blank" rel="noopener noreferrer"><Icon /> {label}</a>
                 </li>
@@ -98,6 +137,7 @@ export default function Portfolio() {
         <dl className="pf-stats">
           <div><dt>Projects</dt><dd>{repos.length}</dd></div>
           <div><dt>Total stars</dt><dd>{fmt(stars)}</dd></div>
+          {calendar && <div><dt>Contributions, past year</dt><dd>{fmt(calendar.total)}</dd></div>}
         </dl>
       </header>
 
@@ -118,6 +158,43 @@ export default function Portfolio() {
         </section>
       )}
 
+      {skills.length > 0 && (
+        <section className="wrap skills" aria-label="Skills and stack">
+          <p className="index-label">Skills and stack</p>
+          <ul className="chips">
+            {skills.map((s) => <li key={s}>{s}</li>)}
+          </ul>
+        </section>
+      )}
+
+      {calendar && (
+        <section className="wrap hm-sec" aria-label="Contribution activity">
+          <p className="index-label">Activity, past year</p>
+          <Heatmap calendar={calendar} />
+        </section>
+      )}
+
+      {featured && (
+        <section className="wrap feat" aria-labelledby="feat-h">
+          <p className="index-label">Featured project</p>
+          <div className={`feat-card ${featImg ? 'has-img' : ''}`}>
+            {featImg && (
+              <img className="feat-img" src={featImg} alt={`${featured.name} screenshot`} loading="lazy" referrerPolicy="no-referrer" />
+            )}
+            <div className="feat-body">
+              <h2 id="feat-h">{featured.name}</h2>
+              <p className="feat-story">{extra.featured.story || featured.blurb || featured.description || 'Open it to read the code.'}</p>
+              <Highlights items={featured.highlights} />
+              <div className="feat-actions">
+                <Link className="btn btn-primary" to={repoLink(featured)}>Read the code</Link>
+                {featDemo && <a className="btn" href={featDemo} target="_blank" rel="noopener noreferrer">Live demo</a>}
+                <a className="btn btn-ghost" href={featured.url} target="_blank" rel="noopener noreferrer">GitHub</a>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       <main className="wrap">
         {repos.length === 0 ? (
           <div className="empty"><p>No projects selected yet.</p></div>
@@ -125,30 +202,72 @@ export default function Portfolio() {
           <>
             <p className="index-label">Selected work</p>
             <ol className="index">
-              {repos.map((r, i) => (
-                <li key={r.name}>
-                  <Link to={`/u/${user.username}/${r.name}${r.file ? `?file=${encodeURIComponent(r.file)}` : ''}`} className="row">
-                    <span className="row-n">{String(i + 1).padStart(2, '0')}</span>
-                    <span className="row-main">
-                      <h2>{r.name}</h2>
-                      <span className="row-desc">{r.blurb || r.description || 'No description yet. Open it to read the code.'}</span>
-                      {r.topics.length > 0 && (
-                        <span className="tags">{r.topics.slice(0, 5).map((t) => <span key={t}>{t}</span>)}</span>
-                      )}
-                    </span>
-                    <span className="row-meta">
-                      {r.language && <span><i style={{ background: langColor(r.language) }} />{r.language}</span>}
-                      <span>★ {fmt(r.stars)} · ⑂ {fmt(r.forks)}</span>
-                      <span>Updated {ago(r.pushed_at)}</span>
-                    </span>
-                    <span className="row-go" aria-hidden="true">→</span>
-                  </Link>
-                </li>
-              ))}
+              {repos.map((r, i) => {
+                const img = safeHref(r.image);
+                return (
+                  <li key={r.name}>
+                    <Link to={repoLink(r)} className="row">
+                      <span className="row-n">{String(i + 1).padStart(2, '0')}</span>
+                      <span className="row-main">
+                        <h2>{r.name}</h2>
+                        <span className="row-desc">{r.blurb || r.description || 'No description yet. Open it to read the code.'}</span>
+                        <Highlights items={r.highlights} />
+                        {r.topics.length > 0 && (
+                          <span className="tags">{r.topics.slice(0, 5).map((t) => <span key={t}>{t}</span>)}</span>
+                        )}
+                        {img && <img className="row-img" src={img} alt={`${r.name} screenshot`} loading="lazy" referrerPolicy="no-referrer" />}
+                      </span>
+                      <span className="row-meta">
+                        {r.language && <span><i style={{ background: langColor(r.language) }} />{r.language}</span>}
+                        <span>★ {fmt(r.stars)} · ⑂ {fmt(r.forks)}</span>
+                        <span>Updated {ago(r.pushed_at)}</span>
+                      </span>
+                      <span className="row-go" aria-hidden="true">→</span>
+                    </Link>
+                  </li>
+                );
+              })}
             </ol>
           </>
         )}
       </main>
+
+      {(experience.length > 0 || education.length > 0) && (
+        <section className="wrap xp" aria-label="Experience and education">
+          {experience.length > 0 && (
+            <div>
+              <p className="index-label">Experience</p>
+              <ol className="xp-list">
+                {experience.map((e, i) => (
+                  <li key={i}>
+                    <span className="xp-when">{e.period}</span>
+                    <div>
+                      <b>{e.role}</b>{e.org && <span className="xp-org"> · {e.org}</span>}
+                      {e.desc && <p>{e.desc}</p>}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+          {education.length > 0 && (
+            <div>
+              <p className="index-label">Education</p>
+              <ol className="xp-list">
+                {education.map((e, i) => (
+                  <li key={i}>
+                    <span className="xp-when">{e.period}</span>
+                    <div>
+                      <b>{e.school}</b>
+                      {e.degree && <p>{e.degree}</p>}
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+        </section>
+      )}
 
       {email && (
         <section className="pf-contact wrap" aria-labelledby="contact-h">

@@ -56,8 +56,27 @@ export default function Dashboard() {
   const set = (patch) => setForm((f) => ({ ...f, ...patch }));
   const setLink = (key, value) => setForm((f) => ({ ...f, links: { ...f.links, [key]: value } }));
   const setNote = (name, patch) =>
-    setForm((f) => ({ ...f, notes: { ...f.notes, [name]: { blurb: '', file: '', ...f.notes?.[name], ...patch } } }));
-  const hasNote = (name) => !!(form.notes?.[name]?.blurb || form.notes?.[name]?.file);
+    setForm((f) => ({ ...f, notes: { ...f.notes, [name]: { blurb: '', file: '', image: '', highlights: [], ...f.notes?.[name], ...patch } } }));
+  const hasNote = (name) => {
+    const n = form.notes?.[name] || {};
+    return !!(n.blurb || n.file || n.image || (n.highlights || []).some(Boolean));
+  };
+  const setHighlight = (name, i, value) => {
+    const cur = form.notes?.[name]?.highlights || [];
+    const next = [cur[0] || '', cur[1] || '', cur[2] || ''];
+    next[i] = value;
+    setNote(name, { highlights: next });
+  };
+
+  // Open-to-work, featured project, experience and education all live in form.extra.
+  const setExtra = (patch) => setForm((f) => ({ ...f, extra: { ...f.extra, ...patch } }));
+  const setFeatured = (patch) => setForm((f) => ({ ...f, extra: { ...f.extra, featured: { ...f.extra.featured, ...patch } } }));
+  const setItem = (key, i, patch) =>
+    setForm((f) => ({ ...f, extra: { ...f.extra, [key]: f.extra[key].map((x, j) => (j === i ? { ...x, ...patch } : x)) } }));
+  const addItem = (key, blank, max) =>
+    setForm((f) => (f.extra[key].length >= max ? f : { ...f, extra: { ...f.extra, [key]: [...f.extra[key], blank] } }));
+  const removeItem = (key, i) =>
+    setForm((f) => ({ ...f, extra: { ...f.extra, [key]: f.extra[key].filter((_, j) => j !== i) } }));
   const toggle = (name) => {
     if (form.repos.includes(name)) return set({ repos: form.repos.filter((n) => n !== name) });
     if (form.repos.length >= MAX) return toast(`You can pick up to ${MAX} projects. Remove one first.`, 'warn');
@@ -74,7 +93,7 @@ export default function Dashboard() {
     setSaving(true);
     setError('');
     try {
-      const body = { headline: form.headline, about: form.about, accent: form.accent, repos: form.repos, links: form.links, notes: form.notes, published: publish ?? form.published, listed: !!form.listed };
+      const body = { headline: form.headline, about: form.about, accent: form.accent, repos: form.repos, links: form.links, notes: form.notes, published: publish ?? form.published, listed: !!form.listed, extra: form.extra };
       const { portfolio } = await api('/me/portfolio', { method: 'PUT', body });
       setForm(portfolio);
       setSaved(portfolio);
@@ -197,6 +216,28 @@ export default function Dashboard() {
                         spellCheck={false}
                       />
                     </label>
+                    <label className="lf">
+                      <span>Screenshot link <small>optional, an image URL</small></span>
+                      <input
+                        value={form.notes?.[n]?.image || ''}
+                        maxLength={200}
+                        onChange={(e) => setNote(n, { image: e.target.value })}
+                        placeholder="i.imgur.com/abc123.png"
+                        spellCheck={false}
+                      />
+                    </label>
+                    <div className="lf">
+                      <span>Highlights <small>up to 3 short bullets</small></span>
+                      {[0, 1, 2].map((k) => (
+                        <input
+                          key={k}
+                          value={(form.notes?.[n]?.highlights || [])[k] || ''}
+                          maxLength={100}
+                          onChange={(e) => setHighlight(n, k, e.target.value)}
+                          placeholder={['Handles 10k requests per second', 'Written in TypeScript with full tests', 'Used by 200+ people'][k]}
+                        />
+                      ))}
+                    </div>
                     <p className="fine">Leave the description empty to use the one from GitHub. Without a file, visitors land on the README.</p>
                   </div>
                 )}
@@ -243,6 +284,82 @@ export default function Dashboard() {
             </label>
             <p className="fine">Shown publicly on your portfolio, so only add what you want recruiters to see.</p>
           </fieldset>
+          <details className="fold">
+            <summary>Open to work badge {form.extra.open && <em className="fold-on">on</em>}</summary>
+            <div className="field fold-body">
+              <label className="check-row">
+                <input type="checkbox" checked={!!form.extra.open} onChange={(e) => setExtra({ open: e.target.checked })} />
+                <span>Show an “open to work” badge at the top of my page</span>
+              </label>
+              <label className="lf">
+                <span>Badge text <small>{(form.extra.openText || '').length}/60</small></span>
+                <input
+                  value={form.extra.openText || ''}
+                  maxLength={60}
+                  onChange={(e) => setExtra({ openText: e.target.value })}
+                  placeholder="Open to work · Remote · Full-time"
+                />
+              </label>
+            </div>
+          </details>
+
+          <details className="fold">
+            <summary>Featured project {form.extra.featured.repo && <em className="fold-on">set</em>}</summary>
+            <div className="field fold-body">
+              <label className="lf">
+                <span>Which project</span>
+                <select value={form.extra.featured.repo} onChange={(e) => setFeatured({ repo: e.target.value })}>
+                  <option value="">None</option>
+                  {form.repos.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </label>
+              <label className="lf">
+                <span>What you built and why <small>{(form.extra.featured.story || '').length}/500</small></span>
+                <textarea rows={4} maxLength={500} value={form.extra.featured.story} onChange={(e) => setFeatured({ story: e.target.value })} placeholder="The problem, what you made, and what you are proud of." />
+              </label>
+              <label className="lf">
+                <span>Screenshot link <small>optional</small></span>
+                <input value={form.extra.featured.image} maxLength={200} onChange={(e) => setFeatured({ image: e.target.value })} placeholder="i.imgur.com/abc123.png" spellCheck={false} />
+              </label>
+              <label className="lf">
+                <span>Live demo link <small>optional</small></span>
+                <input value={form.extra.featured.demo} maxLength={200} onChange={(e) => setFeatured({ demo: e.target.value })} placeholder="myproject.dev" spellCheck={false} />
+              </label>
+              <p className="fine">Pick a project first, from the ones you selected on the left.</p>
+            </div>
+          </details>
+
+          <details className="fold">
+            <summary>Experience {form.extra.experience.length > 0 && <em className="fold-on">{form.extra.experience.length}</em>}</summary>
+            <div className="field fold-body">
+              {form.extra.experience.map((e, i) => (
+                <div className="entry" key={i}>
+                  <label className="lf"><span>Role</span><input value={e.role} maxLength={80} onChange={(ev) => setItem('experience', i, { role: ev.target.value })} placeholder="Backend Engineer" /></label>
+                  <label className="lf"><span>Company</span><input value={e.org} maxLength={80} onChange={(ev) => setItem('experience', i, { org: ev.target.value })} placeholder="Acme Inc." /></label>
+                  <label className="lf"><span>When</span><input value={e.period} maxLength={40} onChange={(ev) => setItem('experience', i, { period: ev.target.value })} placeholder="2022 – Present" /></label>
+                  <label className="lf"><span>What you did <small>{e.desc.length}/300</small></span><textarea rows={3} maxLength={300} value={e.desc} onChange={(ev) => setItem('experience', i, { desc: ev.target.value })} /></label>
+                  <button type="button" className="btn-mini" onClick={() => removeItem('experience', i)}>Remove this entry</button>
+                </div>
+              ))}
+              <button type="button" className="btn-mini" disabled={form.extra.experience.length >= 6} onClick={() => addItem('experience', { role: '', org: '', period: '', desc: '' }, 6)}>+ Add experience</button>
+            </div>
+          </details>
+
+          <details className="fold">
+            <summary>Education {form.extra.education.length > 0 && <em className="fold-on">{form.extra.education.length}</em>}</summary>
+            <div className="field fold-body">
+              {form.extra.education.map((e, i) => (
+                <div className="entry" key={i}>
+                  <label className="lf"><span>School</span><input value={e.school} maxLength={100} onChange={(ev) => setItem('education', i, { school: ev.target.value })} placeholder="University of Example" /></label>
+                  <label className="lf"><span>Degree or course</span><input value={e.degree} maxLength={100} onChange={(ev) => setItem('education', i, { degree: ev.target.value })} placeholder="B.Sc. Computer Science" /></label>
+                  <label className="lf"><span>When</span><input value={e.period} maxLength={40} onChange={(ev) => setItem('education', i, { period: ev.target.value })} placeholder="2018 – 2022" /></label>
+                  <button type="button" className="btn-mini" onClick={() => removeItem('education', i)}>Remove this entry</button>
+                </div>
+              ))}
+              <button type="button" className="btn-mini" disabled={form.extra.education.length >= 4} onClick={() => addItem('education', { school: '', degree: '', period: '' }, 4)}>+ Add education</button>
+            </div>
+          </details>
+
           <label className="field check">
             <input type="checkbox" checked={!!form.listed} onChange={(e) => set({ listed: e.target.checked })} />
             <span>List me on the Explore page <small>Optional. Lets other people and search engines discover your portfolio.</small></span>

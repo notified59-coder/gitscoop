@@ -43,4 +43,6 @@ export async function migrate() {
   if (!cols.includes('notes')) await db.execute(`ALTER TABLE portfolios ADD COLUMN notes TEXT NOT NULL DEFAULT '{}'`);
   // Opt-in: show this portfolio on the public Explore page and in the sitemap.
   if (!cols.includes('listed')) await db.execute('ALTER TABLE portfolios ADD COLUMN listed INTEGER NOT NULL DEFAULT 0');
+    // Open-to-work badge, experience, education and featured project (stored as one JSON blob).
+  if (!cols.includes('extra')) await db.execute(`ALTER TABLE portfolios ADD COLUMN extra TEXT NOT NULL DEFAULT '{}'`);
 }

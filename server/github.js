@@ -40,6 +40,21 @@ export async function gh(path, token, accept = 'application/vnd.github+json') {
   return res;
 }
 
+// GitHub GraphQL (needed for the contribution calendar).
+export async function ghGraphql(query, variables, token) {
+  const t = token || process.env.GITHUB_TOKEN;
+  if (!t) throw new GhError(401, 'No token available');
+  const res = await fetch('https://api.github.com/graphql', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${t}`, 'User-Agent': 'gitscoop', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables }),
+  });
+  if (!res.ok) throw new GhError(502, `GitHub GraphQL error ${res.status}`);
+  const j = await res.json();
+  if (j.errors || !j.data) throw new GhError(502, 'GitHub GraphQL error');
+  return j.data;
+}
+
 export const slimRepo = (r) => ({
   name: r.name,
   full_name: r.full_name,
