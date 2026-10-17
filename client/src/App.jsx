@@ -3,6 +3,7 @@ import { Routes, Route, useLocation } from 'react-router-dom';
 import Landing from './pages/Landing.jsx';
 import NotFound from './pages/NotFound.jsx';
 
+const Explore = lazy(() => import('./pages/Explore.jsx'));
 const Dashboard = lazy(() => import('./pages/Dashboard.jsx'));
 const Portfolio = lazy(() => import('./pages/Portfolio.jsx'));
 const RepoView = lazy(() => import('./pages/RepoView.jsx'));
@@ -26,6 +27,7 @@ export default function App() {
       <Suspense fallback={<Loading />}>
         <Routes>
           <Route path="/" element={<Landing />} />
+          <Route path="/explore" element={<Explore />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/u/:username" element={<Portfolio />} />
           <Route path="/u/:username/:repo" element={<RepoView />} />

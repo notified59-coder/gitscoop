@@ -74,7 +74,7 @@ export default function Dashboard() {
     setSaving(true);
     setError('');
     try {
-      const body = { headline: form.headline, about: form.about, accent: form.accent, repos: form.repos, links: form.links, notes: form.notes, published: publish ?? form.published };
+      const body = { headline: form.headline, about: form.about, accent: form.accent, repos: form.repos, links: form.links, notes: form.notes, published: publish ?? form.published, listed: !!form.listed };
       const { portfolio } = await api('/me/portfolio', { method: 'PUT', body });
       setForm(portfolio);
       setSaved(portfolio);
@@ -243,6 +243,10 @@ export default function Dashboard() {
             </label>
             <p className="fine">Shown publicly on your portfolio, so only add what you want recruiters to see.</p>
           </fieldset>
+          <label className="field check">
+            <input type="checkbox" checked={!!form.listed} onChange={(e) => set({ listed: e.target.checked })} />
+            <span>List me on the Explore page <small>Optional. Lets other people and search engines discover your portfolio.</small></span>
+          </label>
           <fieldset className="field">
             <legend>Accent color</legend>
             <div className="swatches">

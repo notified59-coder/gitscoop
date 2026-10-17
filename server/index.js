@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { db, migrate } from './db.js';
 import { assertEnv, encrypt, decrypt, decryptInfo, isProd } from './security.js';
-import { gh, cached, GhError, slimRepo, TEXT_LIMIT, isBinaryName } from './github.js';
+import { gh, cached, uncache, GhError, slimRepo, TEXT_LIMIT, isBinaryName } from './github.js';
 
 assertEnv();
 await migrate();
@@ -70,7 +70,7 @@ const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).cat
 
 // ---------- session ----------
 const setSession = (res, uid, ver = 0) =>
-  res.cookie('gs_session', jwt.sign({ uid, ver }, SECRET, { expiresIn: '30d' }), {
+  res.cookie('gs_session', jwt.sign({ uid, ver }, SECRET, { expiresIn: '30d', algorithm: 'HS256' }), {
     httpOnly: true, sameSite: 'lax', secure: secureCookie, maxAge: 30 * 864e5, path: '/',
   });
 
@@ -78,7 +78,7 @@ async function currentUser(req) {
   const tok = req.cookies?.gs_session;
   if (!tok) return null;
   try {
-    const { uid, ver = 0 } = jwt.verify(tok, SECRET);
+    const { uid, ver = 0 } = jwt.verify(tok, SECRET, { algorithms: ['HS256'] });
     const u = (await db.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [uid] })).rows[0];
     // A different version means the user logged out since this cookie was issued.
     if (!u || Number(u.session_ver) !== Number(ver)) return null;
@@ -187,7 +187,7 @@ const shapePortfolio = (p) => ({
   repos: JSON.parse(p.repos),
   links: { ...EMPTY_LINKS, ...safeJson(p.links, {}) },
   notes: safeJson(p.notes, {}),
-  published: !!p.published, views: Number(p.views), updated_at: Number(p.updated_at),
+  published: !!p.published, listed: !!p.listed, views: Number(p.views), updated_at: Number(p.updated_at),
 });
 
 api.get('/me/portfolio', requireUser, wrap(async (req, res) => {
@@ -228,6 +228,7 @@ const saveSchema = z.object({
   notes: z.record(z.string().regex(/^[\w.-]{1,100}$/), noteSchema).default({})
     .refine((o) => Object.keys(o).length <= 50, 'Too many project notes'),
   published: z.boolean(),
+  listed: z.boolean().default(false),
 });
 const issueText = (i) => {
   const [a, b] = i.path;
@@ -282,15 +283,17 @@ api.put('/me/portfolio', requireUser, wrap(async (req, res) => {
     }));
 
   await db.execute({
-    sql: 'UPDATE portfolios SET headline=?, about=?, accent=?, repos=?, links=?, notes=?, published=?, updated_at=? WHERE user_id=?',
-    args: [d.headline, d.about, d.accent, JSON.stringify(repos), JSON.stringify(d.links), JSON.stringify(notes), d.published ? 1 : 0, Date.now(), req.user.id],
+    sql: 'UPDATE portfolios SET headline=?, about=?, accent=?, repos=?, links=?, notes=?, published=?, listed=?, updated_at=? WHERE user_id=?',
+    args: [d.headline, d.about, d.accent, JSON.stringify(repos), JSON.stringify(d.links), JSON.stringify(notes), d.published ? 1 : 0, d.listed ? 1 : 0, Date.now(), req.user.id],
   });
+  uncache('explore'); uncache('sitemap');
   res.json({ portfolio: shapePortfolio(await portfolioRow(req.user.id)) });
 }));
 
 api.delete('/me', requireUser, wrap(async (req, res) => {
   await db.execute({ sql: 'DELETE FROM portfolios WHERE user_id = ?', args: [req.user.id] });
   await db.execute({ sql: 'DELETE FROM users WHERE id = ?', args: [req.user.id] });
+  uncache('explore'); uncache('sitemap');
   res.clearCookie('gs_session', { path: '/' });
   res.json({ ok: true });
 }));
@@ -400,9 +403,43 @@ api.get('/p/:username/:repo/file', wrap(async (req, res) => {
   res.json(out);
 }));
 
+// Public gallery: only portfolios that are published AND whose owner opted in to be listed.
+api.get('/explore', publicLimit, wrap(async (req, res) => {
+  const people = await cached('explore', 60_000, async () => {
+    const rows = (await db.execute(
+      `SELECT u.username, u.name, u.avatar, p.headline, p.accent, p.repos, p.views
+       FROM portfolios p JOIN users u ON u.id = p.user_id
+       WHERE p.published = 1 AND p.listed = 1 AND p.repos != '[]'
+       ORDER BY p.views DESC, p.updated_at DESC LIMIT 48`
+    )).rows;
+    return rows.map((r) => ({
+      username: r.username, name: r.name, avatar: r.avatar, headline: r.headline, accent: r.accent,
+      projects: safeJson(r.repos, []).length, views: Number(r.views),
+    }));
+  });
+  res.json({ people });
+}));
+
 api.get('/healthz', (req, res) => res.json({ ok: true }));
 api.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use('/api', api);
+
+// ---------- robots + sitemap ----------
+app.get('/robots.txt', (req, res) => {
+  res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /dashboard\nSitemap: ${APP_URL}/sitemap.xml\n`);
+});
+app.get('/sitemap.xml', wrap(async (req, res) => {
+  const xml = await cached('sitemap', 10 * 60_000, async () => {
+    const rows = (await db.execute(
+      `SELECT u.username FROM portfolios p JOIN users u ON u.id = p.user_id
+       WHERE p.published = 1 AND p.listed = 1 AND p.repos != '[]' LIMIT 5000`
+    )).rows;
+    const urls = ['/', '/explore', ...rows.map((r) => `/u/${encodeURIComponent(r.username)}`)];
+    return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n`
+      + urls.map((u) => `  <url><loc>${esc(APP_URL + u)}</loc></url>`).join('\n') + '\n</urlset>\n';
+  });
+  res.type('application/xml').send(xml);
+}));
 
 // ---------- static client + share-card meta ----------
 const esc = (s = '') => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

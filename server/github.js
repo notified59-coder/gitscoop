@@ -11,13 +11,13 @@ export function cached(key, ttlMs, fn) {
   return p;
 }
 
+// Forget a cached entry right away (used so privacy changes show up instantly).
+export const uncache = (key) => cache.delete(key);
 export class GhError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
 }
 
-export async function gh(path, token, accept = 'application/vnd.github+json') {
-  const t = token || process.env.GITHUB_TOKEN;
-  const res = await fetch(path.startsWith('http') ? path : API + path, {
+async function rawFetch(path, t, accept) {
+  return fetch(path.startsWith('http') ? path : API + path, {
     headers: {
       Accept: accept,
       'User-Agent': 'gitscoop',
@@ -25,6 +25,14 @@ export async function gh(path, token, accept = 'application/vnd.github+json') {
       ...(t ? { Authorization: `Bearer ${t}` } : {}),
     },
   });
+}
+
+export async function gh(path, token, accept = 'application/vnd.github+json') {
+  const t = token || process.env.GITHUB_TOKEN;
+  let res = await rawFetch(path, t, accept);
+  // If the owner revoked GitScoop on GitHub, their saved token stops working.
+  // Public repos still load without it, so portfolios keep working for visitors.
+  if (res.status === 401 && token) res = await rawFetch(path, process.env.GITHUB_TOKEN, accept);
   if (res.status === 404) throw new GhError(404, 'Not found on GitHub');
   if (res.status === 403 || res.status === 429) throw new GhError(429, 'GitHub rate limit reached. Try again in a minute.');
   if (res.status === 401) throw new GhError(401, 'GitHub token expired. Sign in again.');

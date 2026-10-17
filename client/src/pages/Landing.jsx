@@ -68,6 +68,7 @@ export default function Landing() {
             <a href="#method">Method</a>
             <a href="#preview">Preview</a>
             <a href="#faq">Questions</a>
+            <Link to="/explore">Explore</Link>
             {user
               ? <Link className="btn btn-sm" to="/dashboard">Dashboard</Link>
               : <a className="btn btn-sm" href="/api/auth/github">Sign in</a>}
@@ -167,7 +168,7 @@ export default function Landing() {
           <div className="sec-body">
             <div className="faq-list">
               {[
-                ['Is it free?', 'Yes. GitScoop is free while it grows, and your portfolio stays free.'],
+                ['Is it free?', 'Yes. GitScoop is completely free, with no paywalls and no trial.'],
                 ['What can GitScoop see on my account?', 'Your public profile and public repositories. Private repositories are never listed or fetched.'],
                 ['Can I take it down?', 'Switch your portfolio to draft and the link stops working immediately. Deleting your account removes your data.'],
                 ['Do I need to redeploy when I push code?', 'No. Files are fetched live from GitHub and refreshed every five minutes.'],

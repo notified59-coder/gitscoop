@@ -41,4 +41,6 @@ export async function migrate() {
   const cols = (await db.execute('PRAGMA table_info(portfolios)')).rows.map((r) => r.name);
   if (!cols.includes('links')) await db.execute(`ALTER TABLE portfolios ADD COLUMN links TEXT NOT NULL DEFAULT '{}'`);
   if (!cols.includes('notes')) await db.execute(`ALTER TABLE portfolios ADD COLUMN notes TEXT NOT NULL DEFAULT '{}'`);
+  // Opt-in: show this portfolio on the public Explore page and in the sitemap.
+  if (!cols.includes('listed')) await db.execute('ALTER TABLE portfolios ADD COLUMN listed INTEGER NOT NULL DEFAULT 0');
 }
