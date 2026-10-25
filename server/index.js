@@ -296,6 +296,7 @@ api.put('/me/portfolio', requireUser, wrap(async (req, res) => {
     }
   }));
   const repos = uniq.filter((n) => already.has(n) || verified.has(n));
+  const facets = (await computeFacets(req.user.username, token, repos)) || safeJson(current.facets, {});
 
   // Project notes: keep only chosen repos, drop empty ones, validate the "open first" path.
   const notes = {};
@@ -328,8 +329,8 @@ api.put('/me/portfolio', requireUser, wrap(async (req, res) => {
     }));
 
   await db.execute({
-    sql: 'UPDATE portfolios SET headline=?, about=?, accent=?, repos=?, links=?, notes=?, extra=?, published=?, listed=?, updated_at=? WHERE user_id=?',
-    args: [d.headline, d.about, d.accent, JSON.stringify(repos), JSON.stringify(d.links), JSON.stringify(notes), JSON.stringify(extra), d.published ? 1 : 0, d.listed ? 1 : 0, Date.now(), req.user.id],
+    sql: 'UPDATE portfolios SET headline=?, about=?, accent=?, repos=?, links=?, notes=?, extra=?, published=?, listed=?, facets=?, updated_at=? WHERE user_id=?',
+    args: [d.headline, d.about, d.accent, JSON.stringify(repos), JSON.stringify(d.links), JSON.stringify(notes), JSON.stringify(extra), d.published ? 1 : 0, d.listed ? 1 : 0, JSON.stringify(facets), Date.now(), req.user.id],
   });
   uncache('explore'); uncache('sitemap'); uncache(`og:${req.user.username.toLowerCase()}`);
   res.json({ portfolio: shapePortfolio(await portfolioRow(req.user.id)) });
@@ -492,18 +493,59 @@ api.get('/p/:username/:repo/file', wrap(async (req, res) => {
 }));
 
 // Public gallery: only portfolios that are published AND whose owner opted in to be listed.
+// Languages + topics of a user's chosen repos (powers the Explore filters).
+// Returns null when GitHub could not be reached, so we never overwrite good data with nothing.
+async function computeFacets(username, token, repos) {
+  const langs = new Map();
+  const topics = new Set();
+  let ok = 0;
+  await Promise.all(repos.map(async (n) => {
+    try {
+      const r = await (await gh(`/repos/${username}/${n}`, token)).json();
+      ok++;
+      if (r.language) langs.set(r.language, (langs.get(r.language) || 0) + 1);
+      (r.topics || []).forEach((t) => topics.add(t));
+    } catch { /* skip this repo */ }
+  }));
+  if (repos.length && !ok) return null;
+  return {
+    langs: [...langs.entries()].sort((a, b) => b[1] - a[1]).map(([l]) => l).slice(0, 8),
+    topics: [...topics].slice(0, 10),
+  };
+}
+
+// Portfolios saved before filters existed get their languages filled in once, in the background.
+(async () => {
+  try {
+    const rows = (await db.execute(
+      `SELECT u.username, u.token_enc, p.user_id, p.repos FROM portfolios p JOIN users u ON u.id = p.user_id
+       WHERE p.published = 1 AND p.listed = 1 AND p.facets = '{}' AND p.repos != '[]'`
+    )).rows;
+    for (const r of rows) {
+      const f = await computeFacets(r.username, r.token_enc ? decrypt(r.token_enc) : null, safeJson(r.repos, []));
+      if (f) await db.execute({ sql: 'UPDATE portfolios SET facets = ? WHERE user_id = ?', args: [JSON.stringify(f), r.user_id] });
+    }
+    if (rows.length) uncache('explore');
+  } catch (e) { console.error('facet backfill failed:', e.message); }
+})();
+
 api.get('/explore', publicLimit, wrap(async (req, res) => {
   const people = await cached('explore', 60_000, async () => {
     const rows = (await db.execute(
-      `SELECT u.username, u.name, u.avatar, p.headline, p.accent, p.repos, p.views
+      `SELECT u.username, u.name, u.avatar, p.headline, p.accent, p.repos, p.views, p.extra, p.facets, p.updated_at
        FROM portfolios p JOIN users u ON u.id = p.user_id
        WHERE p.published = 1 AND p.listed = 1 AND p.repos != '[]'
-       ORDER BY p.views DESC, p.updated_at DESC LIMIT 48`
+       ORDER BY p.views DESC, p.updated_at DESC LIMIT 200`
     )).rows;
-    return rows.map((r) => ({
-      username: r.username, name: r.name, avatar: r.avatar, headline: r.headline, accent: r.accent,
-      projects: safeJson(r.repos, []).length, views: Number(r.views),
-    }));
+    return rows.map((r) => {
+      const f = safeJson(r.facets, {});
+      return {
+        username: r.username, name: r.name, avatar: r.avatar, headline: r.headline, accent: r.accent,
+        projects: safeJson(r.repos, []).length, views: Number(r.views), updated_at: Number(r.updated_at),
+        open: !!safeJson(r.extra, {}).open,
+        langs: Array.isArray(f.langs) ? f.langs : [], topics: Array.isArray(f.topics) ? f.topics : [],
+      };
+    });
   });
   res.json({ people });
 }));
