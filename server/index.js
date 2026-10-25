@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { db, migrate } from './db.js';
 import { assertEnv, encrypt, decrypt, decryptInfo, isProd } from './security.js';
 import { gh, ghGraphql, cached, uncache, GhError, slimRepo, TEXT_LIMIT, isBinaryName } from './github.js';
+import { renderOg } from './og.js';
 
 assertEnv();
 await migrate();
@@ -330,14 +331,14 @@ api.put('/me/portfolio', requireUser, wrap(async (req, res) => {
     sql: 'UPDATE portfolios SET headline=?, about=?, accent=?, repos=?, links=?, notes=?, extra=?, published=?, listed=?, updated_at=? WHERE user_id=?',
     args: [d.headline, d.about, d.accent, JSON.stringify(repos), JSON.stringify(d.links), JSON.stringify(notes), JSON.stringify(extra), d.published ? 1 : 0, d.listed ? 1 : 0, Date.now(), req.user.id],
   });
-  uncache('explore'); uncache('sitemap');
+  uncache('explore'); uncache('sitemap'); uncache(`og:${req.user.username.toLowerCase()}`);
   res.json({ portfolio: shapePortfolio(await portfolioRow(req.user.id)) });
 }));
 
 api.delete('/me', requireUser, wrap(async (req, res) => {
   await db.execute({ sql: 'DELETE FROM portfolios WHERE user_id = ?', args: [req.user.id] });
   await db.execute({ sql: 'DELETE FROM users WHERE id = ?', args: [req.user.id] });
-  uncache('explore'); uncache('sitemap');
+    uncache('explore'); uncache('sitemap'); uncache(`og:${req.user.username.toLowerCase()}`);
   res.clearCookie('gs_session', { path: '/' });
   res.json({ ok: true });
 }));
@@ -511,6 +512,29 @@ api.get('/healthz', (req, res) => res.json({ ok: true }));
 api.use((req, res) => res.status(404).json({ error: 'Not found' }));
 app.use('/api', api);
 
+// ---------- share-card image: /og/username.png ----------
+const ogLimit = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: true, legacyHeaders: false, message: tooMany });
+app.get('/og/:file', ogLimit, wrap(async (req, res) => {
+  const m = /^([A-Za-z0-9-]{1,39})\.png$/.exec(req.params.file);
+  if (!m) return res.status(404).end();
+  const key = `og:${m[1].toLowerCase()}`;
+  try {
+    const png = await cached(key, 10 * 60_000, async () => {
+      const { u, p } = await loadPublic({ cookies: {} }, m[1]);
+      if (!p.published) throw new GhError(404, 'No portfolio here');
+      const extra = shapeExtra(safeJson(p.extra, {}));
+      return renderOg({
+        name: u.name, username: u.username, avatar: u.avatar,
+        headline: p.headline, accent: p.accent,
+        repos: safeJson(p.repos, []), open: !!extra.open,
+      });
+    });
+    res.set('Cache-Control', 'public, max-age=600').type('png').send(png);
+  } catch {
+    res.status(404).end();
+  }
+}));
+
 // ---------- robots + sitemap ----------
 app.get('/robots.txt', (req, res) => {
   res.type('text/plain').send(`User-agent: *\nAllow: /\nDisallow: /api/\nDisallow: /dashboard\nSitemap: ${APP_URL}/sitemap.xml\n`);
@@ -545,7 +569,8 @@ if (existsSync(DIST)) {
           .replace(/(<meta property="og:title" content=")[^"]*"/, `$1${esc(title)}"`)
           .replace(/(<meta property="og:description" content=")[^"]*"/, `$1${esc(desc)}"`)
           .replace(/(<meta name="description" content=")[^"]*"/, `$1${esc(desc)}"`)
-          .replace(/(<meta property="og:image" content=")[^"]*"/, `$1${esc(u.avatar || '')}"`);
+          .replace(/(<meta property="og:image" content=")[^"]*"/, `$1${esc(`${APP_URL}/og/${u.username}.png`)}"`)
+          .replace('<meta name="twitter:card" content="summary" />', `<meta name="twitter:card" content="summary_large_image" />\n  <meta property="og:image:width" content="1200" />\n  <meta property="og:image:height" content="630" />\n  <meta name="twitter:image" content="${esc(`${APP_URL}/og/${u.username}.png`)}" />`);
       }
     } catch { /* fall through to default shell */ }
     res.set('Cache-Control', 'no-cache').type('html').send(out);

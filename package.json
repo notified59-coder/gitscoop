@@ -12,7 +12,9 @@
     "start": "node --env-file-if-exists=.env server/index.js"
   },
   "dependencies": {
+    "@expo-google-fonts/inter": "^0.4.2",
     "@libsql/client": "^0.14.0",
+    "@resvg/resvg-js": "^2.6.2",
     "compression": "^1.7.4",
     "cookie-parser": "^1.4.6",
     "express": "^4.21.0",
