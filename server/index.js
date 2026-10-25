@@ -13,6 +13,7 @@ import { db, migrate } from './db.js';
 import { assertEnv, encrypt, decrypt, decryptInfo, isProd } from './security.js';
 import { gh, ghGraphql, cached, uncache, GhError, slimRepo, TEXT_LIMIT, isBinaryName } from './github.js';
 import { renderOg } from './og.js';
+import { renderBadge } from './badge.js';
 
 assertEnv();
 await migrate();
@@ -572,6 +573,25 @@ app.get('/og/:file', ogLimit, wrap(async (req, res) => {
       });
     });
     res.set('Cache-Control', 'public, max-age=600').type('png').send(png);
+  } catch {
+    res.status(404).end();
+  }
+}));
+
+// ---------- README badge: /badge/username.svg?style=flat|big ----------
+const badgeLimit = rateLimit({ windowMs: 60_000, limit: 300, standardHeaders: true, legacyHeaders: false, message: tooMany });
+app.get('/badge/:file', badgeLimit, wrap(async (req, res) => {
+  const m = /^([A-Za-z0-9-]{1,39})\.svg$/.exec(req.params.file);
+  if (!m) return res.status(404).end();
+  const style = req.query.style === 'big' ? 'big' : 'flat';
+  try {
+    const svg = await cached(`badge:${m[1].toLowerCase()}:${style}`, 5 * 60_000, async () => {
+      const { p } = await loadPublic({ cookies: {} }, m[1]);
+      if (!p.published) throw new GhError(404, 'No portfolio here');
+      const n = safeJson(p.repos, []).length;
+      return renderBadge({ label: 'portfolio', value: `${n} project${n === 1 ? '' : 's'}`, accent: p.accent, style });
+    });
+    res.set('Cache-Control', 'public, max-age=300').type('image/svg+xml').send(svg);
   } catch {
     res.status(404).end();
   }

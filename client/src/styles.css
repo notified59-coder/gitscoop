@@ -466,3 +466,11 @@ em { font-style: italic; }
 .ex-open::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #22c55e; margin-right: 7px; }
 .ex-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
 .ex-tags span { font: 500 11px var(--mono); color: var(--muted); border: 1px solid var(--line-2); border-radius: 999px; padding: 2px 9px; }
+
+/* ---------- README badge embed ---------- */
+.embed { margin-top: 26px; border-top: 1px solid var(--line); padding-top: 22px; display: grid; gap: 12px; }
+.embed-h { margin: 0; font: 600 15px var(--sans); }
+.embed-prev { display: flex; align-items: center; min-height: 56px; padding: 14px 16px; border: 1px dashed var(--line-2); border-radius: var(--r); background: var(--surface); }
+.embed-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.embed-row .btn-mini[aria-pressed=true] { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.embed-code { margin: 0; padding: 14px 16px; background: var(--code-bg); color: var(--code-ink); border: 1px solid var(--code-line); border-radius: var(--r); font: 400 12.5px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }

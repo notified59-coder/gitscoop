@@ -10,6 +10,8 @@ export default defineConfig({
       '/api': 'http://localhost:8787',
       '/robots.txt': 'http://localhost:8787',
       '/sitemap.xml': 'http://localhost:8787',
+      '/og': 'http://localhost:8787',
+      '/badge': 'http://localhost:8787',
     },
   },
   build: {

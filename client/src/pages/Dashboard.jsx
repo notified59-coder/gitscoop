@@ -5,6 +5,7 @@ import { useAuth } from '../auth.jsx';
 import { useToast } from '../components/Toast.jsx';
 import { Wordmark } from '../components/Brand.jsx';
 import { ACCENTS, langColor, fmt, copy, siteHost } from '../util.js';
+import Embed from '../components/Embed.jsx';
 
 const MAX = 12;
 
@@ -404,6 +405,7 @@ export default function Dashboard() {
               <button className="btn-mini" disabled={saving} onClick={() => save(false)}>Unpublish</button>
             </div>
           )}
+          {form.published && <Embed username={user.username} name={user.name} />}
         </aside>
       </div>
     </div>
